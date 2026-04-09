@@ -1,0 +1,431 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>Proffie config.h Blade Previewer</title>
+<script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  :root {
+    --bg: #ffffff; --bg2: #f5f5f4; --bg3: #f0efed;
+    --text: #1a1a18; --text2: #6b6b67; --text3: #9b9b96;
+    --border: rgba(0,0,0,0.12); --border2: rgba(0,0,0,0.22);
+    --info-bg: #e6f1fb; --info-text: #185fa5;
+    --danger-bg: #fcebeb; --danger-text: #a32d2d;
+    --radius: 8px; --radius-lg: 12px;
+    --font: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    --mono: "SF Mono", "Fira Code", "Cascadia Code", monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #1a1a18; --bg2: #242422; --bg3: #2c2c2a;
+      --text: #f0efed; --text2: #a0a09a; --text3: #6b6b67;
+      --border: rgba(255,255,255,0.1); --border2: rgba(255,255,255,0.2);
+      --info-bg: #042c53; --info-text: #85b7eb;
+      --danger-bg: #501313; --danger-text: #f09595;
+    }
+  }
+  body { font-family: var(--font); background: var(--bg3); color: var(--text); min-height: 100vh; }
+  #root { max-width: 900px; margin: 0 auto; padding: 2rem 1.5rem; }
+  h1 { font-size: 22px; font-weight: 500; margin-bottom: 6px; }
+  h2 { font-size: 18px; font-weight: 500; }
+  p  { font-size: 14px; line-height: 1.7; color: var(--text2); }
+  button {
+    font-family: var(--font); font-size: 13px; padding: 6px 14px;
+    background: transparent; color: var(--text);
+    border: 0.5px solid var(--border2); border-radius: var(--radius);
+    cursor: pointer; transition: background 0.12s;
+  }
+  button:hover { background: var(--bg2); }
+  button:active { transform: scale(0.98); }
+  textarea, input[type=text] {
+    font-family: var(--mono); font-size: 12px; width: 100%;
+    background: var(--bg); color: var(--text);
+    border: 0.5px solid var(--border2); border-radius: var(--radius);
+    padding: 8px; resize: vertical; outline: none;
+  }
+  textarea:focus { border-color: var(--info-text); }
+  canvas { display: block; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useEffect, useRef, useCallback } = React;
+
+/* ── colour helpers ── */
+const NAMED = {
+  RED:[255,0,0],GREEN:[0,255,0],BLUE:[0,0,255],CYAN:[0,255,255],
+  MAGENTA:[255,0,255],YELLOW:[255,255,0],WHITE:[255,255,255],BLACK:[0,0,0],
+  ORANGE:[255,128,0],PINK:[255,105,180],PURPLE:[128,0,128],LIME:[0,255,128],
+  SILVER:[192,192,192],GOLD:[255,215,0],DARKBLUE:[0,0,139],
+  DARKGREEN:[0,100,0],DARKRED:[139,0,0],SKYBLUE:[135,206,235],
+  TURQUOISE:[64,224,208],VIOLET:[238,130,238],
+};
+const clamp = v => Math.max(0,Math.min(255,Math.round(v)));
+const addC  = (a,b,t=1) => a.map((v,i)=>clamp(v+b[i]*t));
+const lerpC = (a,b,t)   => a.map((v,i)=>clamp(v+(b[i]-v)*t));
+const scaleC= (c,t)     => c.map(v=>clamp(v*t));
+const hslToRgb=(h,s,l)=>{
+  const q=l<.5?l*(1+s):l+s-l*s,p=2*l-q;
+  const f=t=>{t=(t%1+1)%1;if(t<1/6)return p+(q-p)*6*t;if(t<.5)return q;if(t<2/3)return p+(q-p)*(2/3-t)*6;return p;};
+  return[clamp(f(h+1/3)*255),clamp(f(h)*255),clamp(f(h-1/3)*255)];
+};
+function parseColor(s=""){
+  s=s.trim();
+  const m=s.match(/Rgb\s*<\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*>/i);
+  if(m)return[+m[1],+m[2],+m[3]];
+  const k=s.toUpperCase().replace(/[^A-Z]/g,"");
+  return NAMED[k]||null;
+}
+function bump(pos,centre,half){if(half<=0)return 0;const d=(pos-centre)/half;return Math.max(0,Math.exp(-d*d*2.5));}
+
+/* ── parser ── */
+function getArgs(inner){const args=[];let depth=0,cur="";for(const ch of inner){if(ch==='<'){depth++;cur+=ch;}else if(ch==='>'){depth--;cur+=ch;}else if(ch===','&&depth===0){args.push(cur.trim());cur="";}else cur+=ch;}if(cur.trim())args.push(cur.trim());return args;}
+function parseName(s){const m=s.match(/^([A-Za-z0-9_]+)\s*<([\s\S]*)>$/);if(m)return{name:m[1],inner:m[2]};return{name:s.replace(/<.*$/s,"").trim(),inner:""};}
+function resolveInt(s=""){const m=s.match(/Int\s*<\s*(\d+)/i);if(m)return+m[1];if(/^\d+$/.test(s.trim()))return+s.trim();return 0;}
+
+function parseNode(s){
+  s=s.trim();const{name,inner}=parseName(s);const N=name.toUpperCase();const args=inner?getArgs(inner):[];
+  if(N==="RGB"||NAMED[N.replace(/[^A-Z]/g,"")])return{type:"color",color:parseColor(s)||[255,255,255]};
+  if(N==="WHITE")return{type:"color",color:[255,255,255]};
+  if(N==="BLACK")return{type:"color",color:[0,0,0]};
+  if(N==="STYLENORMAL")return{type:"styleNormal",base:parseNode(args[0]||"WHITE"),clash:parseNode(args[1]||"WHITE"),inMs:+(args[2]||300),outMs:+(args[3]||800)};
+  if(N==="INOUTHELPER"||N==="INOUTHELPERL"||N==="INOUTHELPERFX"){const t1=inner.match(/Int\s*<\s*(\d+)/gi)||[];return{type:"inout",child:parseNode(args[0]||""),inMs:t1[0]?+t1[0].match(/\d+/)[0]:200,outMs:t1[1]?+t1[1].match(/\d+/)[0]:200};}
+  if(N==="INOUTFUNCX"){const t1=inner.match(/Int\s*<\s*(\d+)/gi)||[];return{type:"inoutfunc",inMs:t1[0]?+t1[0].match(/\d+/)[0]:200,outMs:t1[1]?+t1[1].match(/\d+/)[0]:200};}
+  if(N==="LAYERS")return{type:"layers",layers:args.map(parseNodeFull)};
+  if(N==="BASELAYERF")return{type:"base",color:parseColor(args[0]||"")||[255,255,255]};
+  if(N==="ALPHAL")return{type:"alphaL",color:parseNodeFull(args[0]||""),mask:parseNodeFull(args[1]||"")};
+  if(N==="BUMP"){const ca=args[0]||"",ha=args[1]||"";const cc=/^(Scale|BladeAngle)/i.test(ca),hc=/^Scale/i.test(ha);return{type:"bump",centre:cc?parseNodeFull(ca):resolveInt(ca),half:hc?parseNodeFull(ha):resolveInt(ha)};}
+  if(N==="SCALE")return{type:"scale",ctrl:parseNode(args[0]||""),lo:parseNode(args[1]||""),hi:parseNode(args[2]||"")};
+  if(N==="INT")return{type:"int",value:+(inner||0)};
+  if(N==="BLADEANGLE")return{type:"bladeAngle",lo:+(args[0]||0),hi:+(args[1]||32768)};
+  if(N==="SWINGSPEED")return{type:"swingSpeed",threshold:+(inner||500)};
+  if(N==="CLASHF")return{type:"eventMask",event:"clash"};
+  if(N==="BLASTF")return{type:"eventMask",event:"blast"};
+  if(N==="LOCKUPF")return{type:"eventMask",event:"lockup"};
+  if(N==="STABF")return{type:"eventMask",event:"stab"};
+  if(N==="BUMPF")return{type:"eventMask",event:"clash"};
+  if(N==="AUDIOFLICKER"||N==="AUDIOFLICKERFX")return{type:"audioFlicker",base:parseNode(args[0]||"WHITE"),flicker:parseNode(args[1]||"BLACK")};
+  if(N==="STRIPES"||N==="HARDSTRIPES")return{type:"stripes",speed:+(args[0]||3000),density:+(args[1]||3),colors:args.slice(2).map(parseNode)};
+  if(N==="FIRE"||N==="STYLEFIRE"||N==="FIRESZ")return{type:"fire",heat:parseNode(args[0]||"RED"),flame:parseNode(args[1]||"ORANGE")};
+  if(N==="RAINBOW")return{type:"rainbow"};
+  if(N==="GRADIENT")return{type:"gradient",stops:args.map(parseNode)};
+  if(N==="SPARKLE"||N==="SPARKLEX")return{type:"sparkle",base:parseNode(args[0]||"WHITE")};
+  if(N==="PULSING")return{type:"pulsing",a:parseNode(args[0]||""),b:parseNode(args[1]||""),period:resolveInt(args[2]||"Int<3000>")};
+  if(N==="COLORCHANGE")return{type:"colorChange",colors:args.map(parseNode)};
+  if(N==="INOUTSPARKTIP")return{type:"inout",child:parseNode(args[0]||""),inMs:+(args[1]||300),outMs:+(args[2]||800)};
+  if(N==="SIMPLECLASH")return{type:"simpleClash",clash:parseNode(args[0]||"WHITE")};
+  const fc=parseColor(s);if(fc)return{type:"color",color:fc};
+  return{type:"unknown",raw:s.slice(0,60)};
+}
+function parseNodeFull(s){
+  s=s.trim();const{name,inner}=parseName(s);const N=name.toUpperCase();const args=inner?getArgs(inner):[];
+  if(N==="BUMP"){const ca=args[0]||"",ha=args[1]||"";const cc=/^(Scale|BladeAngle)/i.test(ca),hc=/^Scale/i.test(ha);return{type:"bump",centre:cc?parseNodeFull(ca):resolveInt(ca),half:hc?parseNodeFull(ha):resolveInt(ha)};}
+  if(N==="ALPHAL")return{type:"alphaL",color:parseNodeFull(args[0]||""),mask:parseNodeFull(args[1]||"")};
+  if(N==="LAYERS")return{type:"layers",layers:args.map(parseNodeFull)};
+  return parseNode(s);
+}
+function patchBumpScale(node){
+  if(!node)return node;
+  if(node.type==="layers")return{...node,layers:node.layers.map(patchBumpScale)};
+  if(node.type==="alphaL"){const m=node.mask;if(m?.type==="bump"&&(typeof m.centre==="object"||typeof m.half==="object"))return{type:"alphaLdynamic",colorNode:node.color,centreNode:m.centre,halfNode:m.half};return{...node,color:patchBumpScale(node.color),mask:patchBumpScale(node.mask)};}
+  return node;
+}
+function analyseStyleFull(raw){
+  let inner=raw.replace(/^Style(?:Normal)?Ptr\s*</i,"").replace(/>\s*\(\s*\)\s*$/,"").trim();
+  inner=inner.replace(/EASYBLADE\s*\(\s*([^,)]+)\s*,\s*([^)]+)\s*\)/gi,(_,c1,c2)=>`StyleNormal<${c1.trim()},${c2.trim()},300,800>`);
+  return patchBumpScale(parseNodeFull(inner));
+}
+
+/* ── renderer ── */
+function evalColor(node,norm,state){
+  if(!node)return[0,0,0];const{t}=state;
+  switch(node.type){
+    case"color":case"base":return[...node.color];
+    case"rainbow":return hslToRgb(((norm+t*0.25)%1),1,0.5);
+    case"audioFlicker":{const base=evalColor(node.base,norm,state),flk=evalColor(node.flicker,norm,state);return lerpC(base,flk,1-(0.4+0.6*Math.abs(Math.sin(t*80+norm*7+Math.sin(t*33+norm*13)*4))));}
+    case"gradient":{if(!node.stops?.length)return[0,0,0];const seg=norm*(node.stops.length-1),lo=Math.floor(seg),hi=Math.min(lo+1,node.stops.length-1);return lerpC(evalColor(node.stops[lo],norm,state),evalColor(node.stops[hi],norm,state),seg-lo);}
+    case"stripes":{const colors=node.colors||[];if(!colors.length)return[0,0,0];const idx=Math.floor(((norm*(node.density||3)+t*(10000/(node.speed||3000)))%1)*colors.length);return evalColor(colors[((idx%colors.length)+colors.length)%colors.length],norm,state);}
+    case"pulsing":{const phase=(t%(node.period/1000))/(node.period/1000);return lerpC(evalColor(node.a,norm,state),evalColor(node.b,norm,state),0.5+0.5*Math.sin(phase*Math.PI*2));}
+    case"colorChange":{const colors=node.colors||[];if(!colors.length)return[0,0,0];return evalColor(colors[Math.floor(t/3)%colors.length],norm,state);}
+    case"fire":{const heat=evalColor(node.heat,norm,state),flame=evalColor(node.flame,norm,state),inv=1-norm,noise=0.6+0.4*Math.sin(t*15+norm*8+Math.sin(t*25+norm*5)*3);return lerpC([0,0,0],lerpC(heat,flame,inv*0.7),inv*noise);}
+    case"sparkle":{const base=evalColor(node.base,norm,state);return Math.random()<0.03?[255,255,255]:base;}
+    case"styleNormal":case"inout":return evalColor(node.base||node.child,norm,state);
+    default:return[0,0,0];
+  }
+}
+function evalScalar(node,norm,state){
+  if(!node)return 0;
+  switch(node.type){
+    case"int":return node.value/32768;
+    case"swingSpeed":return state.swingT;
+    case"bladeAngle":return 0.4+0.3*Math.sin(state.t*0.4);
+    case"scale":{const ctrl=evalScalar(node.ctrl,norm,state);return evalScalar(node.lo,norm,state)+(evalScalar(node.hi,norm,state)-evalScalar(node.lo,norm,state))*ctrl;}
+    default:return 0;
+  }
+}
+function renderPixel(node,norm,pos32,state){
+  if(!node)return[0,0,0];if(norm>state.bladeProgress)return[0,0,0];
+  switch(node.type){
+    case"layers":{let col=[0,0,0];for(const L of node.layers)col=addC(col,renderPixel(L,norm,pos32,state),1);return col.map(v=>clamp(v));}
+    case"base":return[...node.color];
+    case"alphaL":{const m=node.mask;let alpha=1;if(m?.type==="bump")alpha=bump(pos32,m.centre,m.half);else if(m?.type==="eventMask")alpha=state.events[m.event]||0;else if(m?.type==="scale"){const ctrl=evalScalar(m.ctrl,norm,state);alpha=evalScalar(m.lo,norm,state)+(evalScalar(m.hi,norm,state)-evalScalar(m.lo,norm,state))*ctrl;}if(alpha<0.005)return[0,0,0];return scaleC(evalColor(node.color,norm,state),alpha);}
+    case"alphaLdynamic":{const centre=evalScalar(node.centreNode,norm,state),half=evalScalar(node.halfNode,norm,state)||0.08,alpha=bump(norm,centre,half);if(alpha<0.005)return[0,0,0];return scaleC(evalColor(node.colorNode,norm,state),alpha);}
+    case"rainbow":case"audioFlicker":case"gradient":case"stripes":case"pulsing":case"colorChange":case"fire":case"sparkle":return evalColor(node,norm,state);
+    case"inout":return renderPixel(node.child,norm,pos32,state);
+    case"styleNormal":{const base=evalColor(node.base,norm,state),ca=state.events.clash||0;return ca>0?addC(base,evalColor(node.clash,norm,state),ca):base;}
+    case"simpleClash":{const a=state.events.clash||0;return a>0?scaleC(evalColor(node.clash,norm,state),a):[0,0,0];}
+    case"color":return[...node.color];
+    default:return parseColor(node.raw||"")||[0,0,0];
+  }
+}
+
+/* ── config parser ── */
+function parseConfig(text){
+  const presets=[];const pm=text.match(/#ifdef\s+CONFIG_PRESETS([\s\S]*?)#endif/);const block=pm?pm[1]:text;let i=0;
+  while(i<block.length){
+    const start=block.indexOf('{',i);if(start===-1)break;
+    let depth=0,j=start;while(j<block.length){if(block[j]==='{')depth++;else if(block[j]==='}'){depth--;if(depth===0)break;}j++;}
+    const entry=block.slice(start+1,j);const strings=[...entry.matchAll(/"([^"]*)"/g)].map(m=>m[1]);
+    const font=strings[0]||"unknown",label=strings[strings.length-1]||font;
+    const styles=[];let si=0;
+    while(si<entry.length){
+      const sm=entry.slice(si).search(/Style(?:Normal)?Ptr\s*</i);if(sm===-1)break;
+      const ss=si+sm;let ad=0,sk=ss,inA=false;
+      while(sk<entry.length){if(entry[sk]==='<'){ad++;inA=true;}else if(entry[sk]==='>'){ad--;if(inA&&ad===0){let e=sk+1;while(e<entry.length&&/[\s()]/.test(entry[e]))e++;styles.push(entry.slice(ss,e).trim());si=e;break;}}sk++;}
+      if(sk>=entry.length)break;
+    }
+    if(styles.length||font!=="unknown")presets.push({font,label,styles,trees:styles.map(analyseStyleFull)});
+    i=j+1;
+  }
+  return presets;
+}
+
+/* ── BladeCanvas ── */
+function BladeCanvas({tree,width=62,height=224}){
+  const ref=useRef(null),frameRef=useRef(null);
+  const draw=useCallback(ts=>{
+    const cv=ref.current;if(!cv)return;const ctx=cv.getContext("2d");
+    const W=cv.width,H=cv.height,TIP_H=26,HILT_H=14,BLADE_W=18,BLADE_TOP=6,CX=W/2;
+    const BLADE_H=H-TIP_H-HILT_H-BLADE_TOP,BLADE_BOT=BLADE_TOP+BLADE_H,NUM_PX=BLADE_H;
+    const sec=ts/1000,PERIOD=5,phase=(sec%PERIOD)/PERIOD;
+    const bladeProgress=phase<0.12?phase/0.12:phase>0.85?1-(phase-0.85)/0.15:1;
+    const swingT=phase<0.12||phase>0.85?0:0.4+0.4*Math.sin(sec*1.4);
+    const clashPhase=(sec%3)/3,clashAlpha=phase>0.15&&phase<0.80&&clashPhase>0.88?Math.sin((clashPhase-0.88)/0.12*Math.PI)*0.9:0;
+    const state={t:sec,swingT,bladeProgress,events:{clash:clashAlpha,blast:0,lockup:0,stab:0}};
+    ctx.clearRect(0,0,W,H);
+    for(let p=0;p<NUM_PX;p++){
+      const norm=p/NUM_PX,pos32=Math.round(norm*32768);const[r,g,b]=renderPixel(tree,norm,pos32,state);
+      if(r+g+b<2)continue;
+      const grd=ctx.createLinearGradient(CX-22,0,CX+22,0);grd.addColorStop(0,`rgba(${r},${g},${b},0)`);grd.addColorStop(.5,`rgba(${r},${g},${b},0.18)`);grd.addColorStop(1,`rgba(${r},${g},${b},0)`);
+      ctx.fillStyle=grd;ctx.fillRect(CX-22,BLADE_TOP+p,44,1);
+      ctx.fillStyle=`rgb(${r},${g},${b})`;ctx.fillRect(CX-BLADE_W/2,BLADE_TOP+p,BLADE_W,1);
+    }
+    if(bladeProgress>0.96){
+      const[tr,tg,tb]=renderPixel(tree,1,32768,state);const tgrd=ctx.createLinearGradient(0,BLADE_BOT,0,BLADE_BOT+TIP_H);
+      tgrd.addColorStop(0,`rgba(${tr},${tg},${tb},1)`);tgrd.addColorStop(1,`rgba(${tr},${tg},${tb},0)`);
+      ctx.fillStyle=tgrd;ctx.beginPath();ctx.moveTo(CX-BLADE_W/2,BLADE_BOT);ctx.quadraticCurveTo(CX-BLADE_W/2,BLADE_BOT+TIP_H,CX,BLADE_BOT+TIP_H);ctx.quadraticCurveTo(CX+BLADE_W/2,BLADE_BOT+TIP_H,CX+BLADE_W/2,BLADE_BOT);ctx.fill();
+    }
+    ctx.fillStyle=`rgba(255,255,255,0.65)`;
+    for(let p=0;p<NUM_PX;p++){if(p/NUM_PX>bladeProgress)continue;const c=renderPixel(tree,p/NUM_PX,Math.round(p/NUM_PX*32768),state);if(c[0]+c[1]+c[2]>8)ctx.fillRect(CX-2,BLADE_TOP+p,4,1);}
+    ctx.fillStyle=`rgba(70,70,70,1)`;ctx.fillRect(CX-12,BLADE_BOT+TIP_H,24,8);
+    ctx.fillStyle=`rgba(50,50,50,1)`;ctx.fillRect(CX-15,BLADE_BOT+TIP_H+6,30,8);
+    frameRef.current=requestAnimationFrame(draw);
+  },[tree]);
+  useEffect(()=>{frameRef.current=requestAnimationFrame(draw);return()=>cancelAnimationFrame(frameRef.current);},[draw]);
+  return <canvas ref={ref} width={width} height={height}/>;
+}
+
+/* ── TreeNode ── */
+function TreeNode({node,depth=0}){
+  const[open,setOpen]=useState(depth<2);if(!node)return null;
+  const children=[node.layers,node.child&&[node.child],node.base&&[node.base],node.color?.type&&[node.color],node.mask&&[node.mask],node.clash&&[node.clash],node.a&&[node.a],node.b&&[node.b],...(node.stops||[]),...(node.colors||[])].flat().filter(Boolean).filter(n=>n?.type);
+  const hasKids=children.length>0;
+  const colorDot=node.color&&Array.isArray(node.color)?<span style={{display:"inline-block",width:9,height:9,borderRadius:"50%",background:`rgb(${node.color.join(",")})`,marginLeft:5,verticalAlign:"middle",flexShrink:0}}/>:null;
+  const colorDot2=node.colorNode?.color&&Array.isArray(node.colorNode.color)?<span style={{display:"inline-block",width:9,height:9,borderRadius:"50%",background:`rgb(${node.colorNode.color.join(",")})`,marginLeft:5,verticalAlign:"middle",flexShrink:0}}/>:null;
+  const label={layers:"Layers<>",base:"BaseLayerF",alphaL:"AlphaL",alphaLdynamic:"AlphaL (dynamic)",bump:"Bump",scale:"Scale",int:`Int<${node.value}>`,bladeAngle:"BladeAngle",swingSpeed:"SwingSpeed",eventMask:`${node.event} mask`,audioFlicker:"AudioFlicker",stripes:"Stripes",fire:"Fire",rainbow:"Rainbow",gradient:"Gradient",sparkle:"Sparkle",pulsing:"Pulsing",colorChange:"ColorChange",inout:"InOutHelper",styleNormal:"StyleNormal",simpleClash:"SimpleClash",inoutfunc:`InOutFuncX`,color:"Color",unknown:`? ${(node.raw||"").slice(0,30)}`}[node.type]||node.type;
+  return(
+    <div style={{marginLeft:depth?10:0,borderLeft:depth?"0.5px solid var(--border)":"none",paddingLeft:depth?8:0}}>
+      <div onClick={()=>hasKids&&setOpen(o=>!o)} style={{display:"flex",alignItems:"center",gap:4,cursor:hasKids?"pointer":"default",padding:"2px 0",userSelect:"none"}}>
+        <span style={{fontSize:10,color:"var(--text3)",minWidth:12}}>{hasKids?(open?"▾":"▸"):""}</span>
+        <span style={{fontSize:12,color:"var(--text2)"}}>{label}</span>
+        {colorDot}{colorDot2}
+        {node.type==="bump"&&typeof node.centre==="number"&&<span style={{fontSize:11,color:"var(--text3)",marginLeft:4}}>pos:{node.centre} r:{node.half}</span>}
+        {(node.type==="inout"||node.type==="inoutfunc")&&node.inMs&&<span style={{fontSize:11,color:"var(--text3)",marginLeft:4}}>{node.inMs}ms/{node.outMs}ms</span>}
+      </div>
+      {open&&hasKids&&children.map((c,i)=><TreeNode key={i} node={c} depth={depth+1}/>)}
+    </div>
+  );
+}
+
+/* ── examples ── */
+const EXAMPLES={
+"Simple":`#ifdef CONFIG_PRESETS
+Preset presets[] = {
+  { "font1","tracks/t1.wav", StyleNormalPtr<CYAN,WHITE,300,800>(), "Cyan Saber" },
+  { "font2","tracks/t2.wav", StyleNormalPtr<RED,WHITE,200,600>(), "Red Saber" },
+  { "font3","tracks/t3.wav", StyleNormalPtr<Rgb<128,0,255>,WHITE,400,1000>(), "Purple Saber" },
+};
+BladeConfig blades[] = {{ 0, WS281XBladePtr<144,bladePin,Color8::GRB,PowerPINS<bladePowerPin2,bladePowerPin3>>(), CONFIGARRAY(presets) }};
+#endif`,
+"Medium":`#ifdef CONFIG_PRESETS
+Preset presets[] = {
+  { "fire_font","tracks/fire.wav", StylePtr<InOutHelper<StyleFire<RED,ORANGE,0>>>(), "Fire Blade" },
+  { "flicker_font","tracks/unstable.wav", StylePtr<InOutHelper<AudioFlicker<BLUE,BLACK>>>(), "Blue Flicker" },
+  { "stripes_font","tracks/stripes.wav", StylePtr<InOutHelper<Stripes<3000,3,YELLOW,BLACK,ORANGE,BLACK>>>(), "Unstable Yellow" },
+  { "rainbow_font","tracks/rainbow.wav", StylePtr<InOutHelper<Rainbow>>(), "Rainbow" },
+};
+BladeConfig blades[] = {{ 0, WS281XBladePtr<144,bladePin,Color8::GRB,PowerPINS<bladePowerPin2,bladePowerPin3>>(), CONFIGARRAY(presets) }};
+#endif`,
+"Complex":`#ifdef CONFIG_PRESETS
+Preset presets[] = {
+  { "font1","font1/tracks/track1.wav",
+    StylePtr<Layers<
+      BaseLayerF<Rgb<255,80,0>>,
+      AlphaL<Rgb<0,220,30>, Bump<Int<0>, Int<3641>>>,
+      AlphaL<Rgb<0,220,30>, Bump<Int<32768>, Int<3641>>>,
+      AlphaL<Rgb<255,220,0>, Bump<Scale<SwingSpeed<500>,BladeAngle<0,32768>,Int<32768>>,Scale<SwingSpeed<500>,Int<2730>,Int<2000>>>>,
+      AlphaL<Rgb<255,180,80>, ClashF<>>,
+      InOutHelperL<InOutFuncX<Int<200>,Int<200>>>
+    >>(),
+    "Custom Blade" },
+};
+BladeConfig blades[] = {{ 0, WS281XBladePtr<144,bladePin,Color8::GRB,PowerPINS<bladePowerPin2,bladePowerPin3>>(), CONFIGARRAY(presets) }};
+#endif`,
+};
+
+/* ── App ── */
+function App(){
+  const[configText,setConfigText]=useState("");const[presets,setPresets]=useState([]);const[selected,setSelected]=useState(null);const[tab,setTab]=useState("visual");const[error,setError]=useState("");const[dragging,setDragging]=useState(false);const[activeEx,setActiveEx]=useState(null);
+  const parse=text=>{setError("");try{const r=parseConfig(text);if(!r.length){setError("No presets found. Ensure your file has a CONFIG_PRESETS block with Preset entries.");return;}setPresets(r);setSelected(0);setTab("visual");}catch(e){setError("Parse error: "+e.message);}};
+  const handleFile=file=>{if(!file)return;const rd=new FileReader();rd.onload=e=>{const t=e.target.result;setConfigText(t);setActiveEx(null);parse(t);};rd.readAsText(file);};
+  const loadEx=name=>{setActiveEx(name);setConfigText(EXAMPLES[name]);parse(EXAMPLES[name]);};
+  const sel=selected!==null?presets[selected]:null;
+  const s={card:{background:"var(--bg)",border:"0.5px solid var(--border)",borderRadius:"var(--radius-lg)",padding:"1.25rem"},label:{fontSize:11,fontWeight:500,color:"var(--text3)",textTransform:"uppercase",letterSpacing:"0.06em",marginBottom:6,display:"block"},badge:{fontSize:12,padding:"2px 8px",background:"var(--info-bg)",color:"var(--info-text)",borderRadius:"var(--radius)",display:"inline-block"},divider:{height:"0.5px",background:"var(--border)",margin:"1.5rem 0"},error:{fontSize:13,color:"var(--danger-text)",padding:"10px 14px",background:"var(--danger-bg)",borderRadius:"var(--radius)",marginTop:"1rem"}};
+  return(
+    <div>
+      <div style={{marginBottom:"2rem"}}>
+        <h1>Proffie config.h previewer</h1>
+        <p style={{marginTop:4}}>Parses any ProffieOS config — simple through complex Layers styles. Supports V2.2 and V3.</p>
+      </div>
+      {presets.length===0?(
+        <div>
+          <div onDragOver={e=>{e.preventDefault();setDragging(true);}} onDragLeave={()=>setDragging(false)} onDrop={e=>{e.preventDefault();setDragging(false);handleFile(e.dataTransfer.files[0]);}} onClick={()=>document.getElementById("fi").click()}
+            style={{border:`2px dashed ${dragging?"var(--info-text)":"var(--border2)"}`,borderRadius:"var(--radius-lg)",padding:"2.5rem 1.5rem",textAlign:"center",background:dragging?"var(--bg2)":"transparent",marginBottom:"1.5rem",cursor:"pointer"}}>
+            <div style={{fontSize:15,color:"var(--text2)",marginBottom:6}}>Drop your config.h here or click to browse</div>
+            <div style={{fontSize:13,color:"var(--text3)"}}>.h and .txt files accepted</div>
+            <input id="fi" type="file" accept=".h,.txt" style={{display:"none"}} onChange={e=>handleFile(e.target.files[0])}/>
+          </div>
+          <div style={{marginBottom:"1.5rem"}}>
+            <span style={s.label}>Try an example</span>
+            <div style={{display:"flex",flexWrap:"wrap",gap:8}}>
+              {Object.keys(EXAMPLES).map(name=>(
+                <button key={name} onClick={()=>loadEx(name)} style={{background:activeEx===name?"var(--bg2)":"transparent",borderColor:activeEx===name?"var(--border2)":"var(--border)"}}>{name} ↗</button>
+              ))}
+            </div>
+          </div>
+          <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:"1rem"}}>
+            <div style={{flex:1,...s.divider,margin:0}}/><span style={{fontSize:12,color:"var(--text3)",whiteSpace:"nowrap"}}>or paste below</span><div style={{flex:1,...s.divider,margin:0}}/>
+          </div>
+          <textarea rows={8} placeholder="Paste config.h contents here…" value={configText} onChange={e=>setConfigText(e.target.value)}/>
+          <button style={{marginTop:8}} onClick={()=>parse(configText)}>Parse config</button>
+          {error&&<div style={s.error}>{error}</div>}
+        </div>
+      ):(
+        <div>
+          <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:"1rem"}}>
+            <span style={{fontSize:14,color:"var(--text2)"}}>{presets.length} preset{presets.length!==1?"s":""} found</span>
+            <button onClick={()=>{setPresets([]);setSelected(null);setConfigText("");setError("");setActiveEx(null);}}>← Load different file</button>
+          </div>
+          <div style={{display:"grid",gridTemplateColumns:"200px 1fr",gap:"1.5rem"}}>
+            <div style={{borderRight:"0.5px solid var(--border)",paddingRight:"1.5rem"}}>
+              <span style={s.label}>Presets</span>
+              {presets.map((p,i)=>{
+                const bc=p.trees[0]?.type==="base"?p.trees[0].color:p.trees[0]?.layers?.find(l=>l.type==="base")?.color||[0,120,255];
+                return(<div key={i} onClick={()=>setSelected(i)} style={{display:"flex",alignItems:"center",gap:8,padding:"7px 10px",borderRadius:"var(--radius)",cursor:"pointer",marginBottom:3,background:selected===i?"var(--bg2)":"transparent",border:selected===i?"0.5px solid var(--border2)":"0.5px solid transparent"}}>
+                  <div style={{width:10,height:10,borderRadius:"50%",background:`rgb(${bc.join(",")})`,flexShrink:0,boxShadow:`0 0 5px rgba(${bc.join(",")},0.7)`}}/>
+                  <div style={{overflow:"hidden"}}>
+                    <div style={{fontSize:13,fontWeight:selected===i?500:400,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{p.label}</div>
+                    <div style={{fontSize:11,color:"var(--text3)",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{p.font}</div>
+                  </div>
+                </div>);
+              })}
+            </div>
+            {sel&&(
+              <div>
+                <div style={{display:"flex",gap:6,marginBottom:"1rem",paddingBottom:10,borderBottom:"0.5px solid var(--border)",flexWrap:"wrap"}}>
+                  {["visual","tree","raw"].map(tb=>(
+                    <button key={tb} onClick={()=>setTab(tb)} style={{background:tab===tb?"var(--bg2)":"transparent",borderColor:tab===tb?"var(--border2)":"var(--border)"}}>
+                      {tb==="visual"?"Blade preview":tb==="tree"?"Node tree":"Raw style"}
+                    </button>
+                  ))}
+                </div>
+                {tab==="visual"&&(
+                  <div style={{display:"flex",gap:"2rem",alignItems:"flex-start",flexWrap:"wrap"}}>
+                    {sel.trees.map((tree,bi)=>(
+                      <div key={bi} style={{textAlign:"center"}}>
+                        <div style={{background:"#0d0d0d",borderRadius:"var(--radius)",padding:"14px 12px",display:"inline-block",border:"0.5px solid #333"}}>
+                          <BladeCanvas tree={tree} width={62} height={224}/>
+                        </div>
+                        {sel.trees.length>1&&<div style={{fontSize:11,color:"var(--text3)",marginTop:4}}>blade {bi+1}</div>}
+                      </div>
+                    ))}
+                    <div style={{flex:1,minWidth:180}}>
+                      <div style={{marginBottom:14}}><span style={s.label}>Preset</span><div style={{fontSize:16,fontWeight:500}}>{sel.label}</div></div>
+                      <div style={{marginBottom:14}}><span style={s.label}>Sound font</span><div style={{fontSize:13,fontFamily:"var(--mono)",color:"var(--text2)"}}>{sel.font}</div></div>
+                      <div style={{marginBottom:14}}><span style={s.label}>Blades</span><div style={{fontSize:13}}>{sel.trees.length}</div></div>
+                      <div><span style={s.label}>Style type</span><span style={s.badge}>{sel.trees[0]?.type==="layers"?"Layers<>":sel.trees[0]?.type==="styleNormal"?"StyleNormal":sel.trees[0]?.type==="inout"?"InOutHelper":sel.trees[0]?.type||"unknown"}</span></div>
+                      <p style={{marginTop:14,fontSize:12,lineHeight:1.6}}>Animation loops every 5s: ignite → idle (swing dot, periodic clash flash) → retract.</p>
+                    </div>
+                  </div>
+                )}
+                {tab==="tree"&&(
+                  <div style={{...s.card,background:"var(--bg2)"}}>
+                    <div style={{fontSize:12,color:"var(--text3)",marginBottom:10}}>Parsed node tree — click nodes to expand/collapse</div>
+                    {sel.trees.map((tree,bi)=>(
+                      <div key={bi}>
+                        {sel.trees.length>1&&<div style={{fontSize:12,color:"var(--text3)",marginBottom:4,marginTop:bi?12:0}}>Blade {bi+1}</div>}
+                        <TreeNode node={tree} depth={0}/>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {tab==="raw"&&sel.styles.map((st,bi)=>(
+                  <div key={bi} style={{marginBottom:"1rem"}}>
+                    {sel.styles.length>1&&<div style={{fontSize:12,color:"var(--text3)",marginBottom:4}}>Blade {bi+1}</div>}
+                    <pre style={{fontFamily:"var(--mono)",fontSize:11,background:"var(--bg2)",border:"0.5px solid var(--border)",borderRadius:"var(--radius)",padding:"12px",overflowX:"auto",whiteSpace:"pre-wrap",wordBreak:"break-all",color:"var(--text2)",lineHeight:1.6}}>{st}</pre>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+          {presets.length>1&&(
+            <div style={{marginTop:"2rem",paddingTop:"1.5rem",borderTop:"0.5px solid var(--border)"}}>
+              <span style={s.label}>All presets</span>
+              <div style={{display:"flex",flexWrap:"wrap",gap:"1rem"}}>
+                {presets.map((p,i)=>(
+                  <div key={i} onClick={()=>{setSelected(i);setTab("visual");}} style={{textAlign:"center",cursor:"pointer",opacity:selected===i?1:0.6,transition:"opacity 0.15s"}}>
+                    <div style={{background:"#0d0d0d",borderRadius:"var(--radius)",padding:"8px 6px",border:selected===i?"1.5px solid var(--border2)":"0.5px solid #333",display:"inline-block"}}>
+                      <BladeCanvas tree={p.trees[0]} width={42} height={140}/>
+                    </div>
+                    <div style={{fontSize:11,marginTop:4,color:"var(--text2)",maxWidth:64,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{p.label}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+      <div style={{...s.divider}}/>
+      <p style={{fontSize:12}}>Proffie config.h previewer · open source · supports ProffieOS V2.2 and V3 · <a href="https://github.com/profezzorn/ProffieOS" style={{color:"var(--info-text)"}}>ProffieOS</a></p>
+    </div>
+  );
+}
+ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+</script>
+</body>
+</html>
